@@ -24,6 +24,9 @@ PUBLIC_UPSTREAM_RETRIES="${PUBLIC_UPSTREAM_RETRIES:-8}"
 PUBLIC_STREAM_RETRIES="${PUBLIC_STREAM_RETRIES:-2}"
 PUBLIC_INITIAL_BUFFER_BYTES="${PUBLIC_INITIAL_BUFFER_BYTES:-262144}"
 PUBLIC_RELAY_BUFFER_BYTES="${PUBLIC_RELAY_BUFFER_BYTES:-262144}"
+PUBLIC_CLIENT_FAILOVER_ATTEMPTS="${PUBLIC_CLIENT_FAILOVER_ATTEMPTS:-4}"
+PUBLIC_CLIENT_FAILOVER_WAIT_SECONDS="${PUBLIC_CLIENT_FAILOVER_WAIT_SECONDS:-120}"
+PUBLIC_CONNECT_FAILURES_BEFORE_ROTATE="${PUBLIC_CONNECT_FAILURES_BEFORE_ROTATE:-1}"
 SKIP_HEALTH_WHEN_PUBLIC_ACTIVE_SECONDS="${SKIP_HEALTH_WHEN_PUBLIC_ACTIVE_SECONDS:-300}"
 DEFER_ROTATE_WHEN_PUBLIC_ACTIVE_SECONDS="${DEFER_ROTATE_WHEN_PUBLIC_ACTIVE_SECONDS:-300}"
 MAX_ROTATE_DEFER_SECONDS="${MAX_ROTATE_DEFER_SECONDS:-900}"
@@ -67,6 +70,9 @@ Options:
   --health-failures N
   --public-max-connections N
   --public-health-url URL
+  --public-client-failover-attempts N
+  --public-client-failover-wait-seconds N
+  --public-connect-failures-before-rotate N
   --health-via-public
   --with-tun2socks
   --with-iphlpapi-shim
@@ -87,6 +93,9 @@ while [[ $# -gt 0 ]]; do
     --health-failures) HEALTH_FAILURES="$2"; shift 2 ;;
     --public-max-connections) PUBLIC_MAX_CONNECTIONS="$2"; shift 2 ;;
     --public-health-url) PUBLIC_HEALTH_URL="$2"; shift 2 ;;
+    --public-client-failover-attempts) PUBLIC_CLIENT_FAILOVER_ATTEMPTS="$2"; shift 2 ;;
+    --public-client-failover-wait-seconds) PUBLIC_CLIENT_FAILOVER_WAIT_SECONDS="$2"; shift 2 ;;
+    --public-connect-failures-before-rotate) PUBLIC_CONNECT_FAILURES_BEFORE_ROTATE="$2"; shift 2 ;;
     --health-via-public) HEALTH_VIA_PUBLIC=1; shift ;;
     --with-tun2socks) NO_TUN2SOCKS=0; shift ;;
     --with-iphlpapi-shim) XVPN_IPHLPAPI_SHIM=1; shift ;;
@@ -279,5 +288,8 @@ fi
   --public-stream-retries "${PUBLIC_STREAM_RETRIES}" \
   --public-initial-buffer-bytes "${PUBLIC_INITIAL_BUFFER_BYTES}" \
   --public-relay-buffer-bytes "${PUBLIC_RELAY_BUFFER_BYTES}" \
+  --public-client-failover-attempts "${PUBLIC_CLIENT_FAILOVER_ATTEMPTS}" \
+  --public-client-failover-wait-seconds "${PUBLIC_CLIENT_FAILOVER_WAIT_SECONDS}" \
+  --public-connect-failures-before-rotate "${PUBLIC_CONNECT_FAILURES_BEFORE_ROTATE}" \
   "${TUN_ARGS[@]}" \
   "${EXTRA_ARGS[@]}"

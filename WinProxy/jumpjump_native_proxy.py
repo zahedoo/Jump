@@ -1222,6 +1222,8 @@ class TcpForwarder:
         stream_retries=2,
         initial_buffer_bytes=262144,
         relay_buffer_bytes=262144,
+        client_failover_attempts=3,
+        client_failover_wait_seconds=90,
     ):
         self.listen_address = listen_address
         self.listen_port = int(listen_port)
@@ -1232,10 +1234,18 @@ class TcpForwarder:
         self.stream_retries = max(0, int(stream_retries))
         self.initial_buffer_bytes = max(0, int(initial_buffer_bytes))
         self.relay_buffer_bytes = max(65536, int(relay_buffer_bytes))
+        self.client_failover_attempts = max(0, int(client_failover_attempts))
+        self.client_failover_wait_seconds = max(1, int(client_failover_wait_seconds))
         self.client_slots = threading.BoundedSemaphore(self.max_clients)
         self.activity_lock = threading.Lock()
         self.active_clients = 0
         self.last_activity = 0.0
+        self.failure_lock = threading.Lock()
+        self.consecutive_connect_failures = 0
+        self.last_connect_failure = 0.0
+        self.last_connect_failure_reason = ""
+        self.target_cond = threading.Condition()
+        self.target_version = 0
         self.stop_event = threading.Event()
         self.server = None
 
@@ -1286,8 +1296,11 @@ class TcpForwarder:
                 pass
 
     def update_target(self, target_host, target_port):
-        self.target_host = target_host
-        self.target_port = int(target_port)
+        with self.target_cond:
+            self.target_host = target_host
+            self.target_port = int(target_port)
+            self.target_version += 1
+            self.target_cond.notify_all()
 
     def mark_activity(self, active_delta=0):
         with self.activity_lock:
@@ -1298,6 +1311,45 @@ class TcpForwarder:
     def recently_active(self, seconds):
         with self.activity_lock:
             return self.active_clients > 0 or (time.time() - self.last_activity) < max(0, seconds)
+
+    def mark_connect_failure(self, reason):
+        with self.failure_lock:
+            self.consecutive_connect_failures += 1
+            self.last_connect_failure = time.time()
+            self.last_connect_failure_reason = str(reason or "")[:240]
+            return self.consecutive_connect_failures
+
+    def mark_connect_success(self):
+        with self.failure_lock:
+            self.consecutive_connect_failures = 0
+            self.last_connect_failure_reason = ""
+
+    def connect_failure_snapshot(self):
+        with self.failure_lock:
+            return {
+                "count": self.consecutive_connect_failures,
+                "lastAt": self.last_connect_failure,
+                "reason": self.last_connect_failure_reason,
+            }
+
+    def reset_connect_failures(self):
+        with self.failure_lock:
+            self.consecutive_connect_failures = 0
+            self.last_connect_failure_reason = ""
+
+    def get_target_version(self):
+        with self.target_cond:
+            return self.target_version
+
+    def wait_for_target_change(self, previous_version, timeout):
+        deadline = time.time() + max(0.0, float(timeout))
+        with self.target_cond:
+            while not self.stop_event.is_set() and self.target_version == previous_version:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    return False
+                self.target_cond.wait(timeout=min(1.0, remaining))
+            return self.target_version != previous_version
 
     def _accept_loop(self):
         while not self.stop_event.is_set():
@@ -1428,6 +1480,7 @@ class TcpForwarder:
     def _handle_client(self, client):
         upstream = None
         acquired = False
+        active_marked = False
         try:
             request_bytes = self._read_socks_request_from_client(client)
 
@@ -1438,15 +1491,39 @@ class TcpForwarder:
                 except Exception:
                     pass
                 return
-            self.mark_activity(active_delta=1)
-            try:
-                upstream, response = self._connect_native_socks(request_bytes)
-            except Exception:
+
+            last_connect_error = None
+            for failover_attempt in range(self.client_failover_attempts + 1):
+                target_version = self.get_target_version()
+                try:
+                    upstream, response = self._connect_native_socks(request_bytes)
+                    self.mark_connect_success()
+                    break
+                except Exception as exc:
+                    last_connect_error = exc
+                    failure_count = self.mark_connect_failure(exc)
+                    print(
+                        "PUBLIC_CONNECT_FAIL "
+                        f"count={failure_count} attempt={failover_attempt + 1}/{self.client_failover_attempts + 1} "
+                        f"target=127.0.0.1:{self.target_port} error={str(exc)[:180]}",
+                        flush=True,
+                    )
+                    if failover_attempt >= self.client_failover_attempts:
+                        break
+                    changed = self.wait_for_target_change(target_version, self.client_failover_wait_seconds)
+                    if not changed:
+                        break
+
+            if upstream is None:
+                print(f"PUBLIC_CLIENT_FAILOVER_EXHAUSTED error={str(last_connect_error)[:220]}", flush=True)
                 try:
                     client.sendall(b"\x05\x01\x00\x01\x00\x00\x00\x00\x00\x00")
                 except Exception:
                     pass
                 return
+
+            self.mark_activity(active_delta=1)
+            active_marked = True
             client.sendall(response)
 
             upstream_app_seen = False
@@ -1513,7 +1590,8 @@ class TcpForwarder:
                         pass
             if acquired:
                 try:
-                    self.mark_activity(active_delta=-1)
+                    if active_marked:
+                        self.mark_activity(active_delta=-1)
                     self.client_slots.release()
                 except ValueError:
                     pass
@@ -1529,6 +1607,8 @@ def expose_public_port(
     stream_retries=2,
     initial_buffer_bytes=262144,
     relay_buffer_bytes=262144,
+    client_failover_attempts=3,
+    client_failover_wait_seconds=90,
 ):
     if os.name == "nt":
         # Clear stale netsh portproxy listeners from older runs. The current version
@@ -1571,6 +1651,8 @@ def expose_public_port(
         stream_retries=stream_retries,
         initial_buffer_bytes=initial_buffer_bytes,
         relay_buffer_bytes=relay_buffer_bytes,
+        client_failover_attempts=client_failover_attempts,
+        client_failover_wait_seconds=client_failover_wait_seconds,
     ).start()
 
 
@@ -1812,6 +1894,9 @@ def main():
     ap.add_argument("--public-stream-retries", type=int, default=2, help="replay initial client payload if native SOCKS closes before first upstream payload")
     ap.add_argument("--public-initial-buffer-bytes", type=int, default=262144, help="max initial client payload bytes buffered for replay")
     ap.add_argument("--public-relay-buffer-bytes", type=int, default=262144, help="TCP relay read/write buffer size")
+    ap.add_argument("--public-client-failover-attempts", type=int, default=3, help="hold a client and retry it after config rotation instead of returning SOCKS failure immediately")
+    ap.add_argument("--public-client-failover-wait-seconds", type=int, default=90, help="seconds a failed public client waits for a new target before returning SOCKS failure")
+    ap.add_argument("--public-connect-failures-before-rotate", type=int, default=1, help="public SOCKS connect failures that trigger immediate rotation")
     ap.add_argument("--public-health-url", default="http://ifconfig.me/ip", help="strict URL used to validate --public-port before accepting a config")
     ap.add_argument("--health-interval", type=int, default=30, help="seconds between SOCKS health checks in long-running mode")
     ap.add_argument("--health-failures", type=int, default=2, help="consecutive failed health checks before rotating config")
@@ -1962,6 +2047,8 @@ def main():
                         args.public_stream_retries,
                         args.public_initial_buffer_bytes,
                         args.public_relay_buffer_bytes,
+                        args.public_client_failover_attempts,
+                        args.public_client_failover_wait_seconds,
                     )
                     print(f"PUBLIC_SOCKS5={args.public_listen}:{args.public_port}")
                     print("PUBLIC_FORWARDER=python-relay")
@@ -1969,6 +2056,9 @@ def main():
                     print(f"PUBLIC_FORWARDER_UPSTREAM_RETRIES={args.public_upstream_retries}")
                     print(f"PUBLIC_FORWARDER_STREAM_RETRIES={args.public_stream_retries}")
                     print(f"PUBLIC_FORWARDER_RELAY_BUFFER_BYTES={args.public_relay_buffer_bytes}")
+                    print(f"PUBLIC_CLIENT_FAILOVER_ATTEMPTS={args.public_client_failover_attempts}")
+                    print(f"PUBLIC_CLIENT_FAILOVER_WAIT_SECONDS={args.public_client_failover_wait_seconds}")
+                    print(f"PUBLIC_CONNECT_FAILURES_BEFORE_ROTATE={args.public_connect_failures_before_rotate}")
                     if args.allow_from_ip:
                         print(f"PUBLIC_FIREWALL_ALLOW_FROM={args.allow_from_ip}")
                 else:
@@ -2036,45 +2126,67 @@ def main():
             last_ip = result["public_ip"]
             rotate_due_since = None
             while True:
-                time.sleep(max(1, args.health_interval))
-                if (
-                    public_forwarder is not None
-                    and not args.health_via_public
-                    and args.skip_health_when_public_active_seconds > 0
-                    and public_forwarder.recently_active(args.skip_health_when_public_active_seconds)
-                ):
-                    print(
-                        "HEALTH_SKIPPED "
-                        f"reason=recent_public_activity seconds={args.skip_health_when_public_active_seconds}"
-                    )
-                    fail_count = 0
-                    continue
-                ok, out, checked_url, successes, failures = probe_socks_path(
-                    health_port,
-                    health_host,
-                    args.health_probes,
-                    args.health_probe_max_failures,
-                    args.health_probe_delay_ms,
-                    "HEALTH",
-                )
-                if ok and out:
-                    if out != last_ip:
-                        print(f"HEALTH_OK_IP_CHANGED old={last_ip} new={out} url={checked_url}")
-                        last_ip = out
-                    else:
-                        print(f"HEALTH_OK ip={out} url={checked_url}")
-                    fail_count = 0
-                    rotate_due_since = None
-                    continue
+                public_failure = None
+                sleep_until = time.time() + max(1, args.health_interval)
+                while time.time() < sleep_until:
+                    time.sleep(min(1.0, max(0.1, sleep_until - time.time())))
+                    if public_forwarder is None or args.public_connect_failures_before_rotate <= 0:
+                        continue
+                    snapshot = public_forwarder.connect_failure_snapshot()
+                    if snapshot.get("count", 0) >= max(1, args.public_connect_failures_before_rotate):
+                        public_failure = snapshot
+                        break
 
-                fail_count += 1
-                err = " | ".join(f"{f['url']}: {f['error']}" for f in failures[-5:]) or "health probe failed"
-                print(f"HEALTH_FAIL count={fail_count}/{args.health_failures} error={err[:240]}")
+                if public_failure is not None:
+                    err = (
+                        "public SOCKS connect failures "
+                        f"count={public_failure.get('count')} reason={public_failure.get('reason')}"
+                    )
+                    fail_count = max(fail_count + 1, max(1, args.health_failures))
+                    print(f"HEALTH_FAIL_FAST_PUBLIC_CONNECT count={fail_count}/{args.health_failures} error={err[:240]}")
+                else:
+                    if (
+                        public_forwarder is not None
+                        and not args.health_via_public
+                        and args.skip_health_when_public_active_seconds > 0
+                        and public_forwarder.recently_active(args.skip_health_when_public_active_seconds)
+                    ):
+                        print(
+                            "HEALTH_SKIPPED "
+                            f"reason=recent_public_activity seconds={args.skip_health_when_public_active_seconds}"
+                        )
+                        fail_count = 0
+                        continue
+                    ok, out, checked_url, successes, failures = probe_socks_path(
+                        health_port,
+                        health_host,
+                        args.health_probes,
+                        args.health_probe_max_failures,
+                        args.health_probe_delay_ms,
+                        "HEALTH",
+                    )
+                    if ok and out:
+                        if out != last_ip:
+                            print(f"HEALTH_OK_IP_CHANGED old={last_ip} new={out} url={checked_url}")
+                            last_ip = out
+                        else:
+                            print(f"HEALTH_OK ip={out} url={checked_url}")
+                        fail_count = 0
+                        rotate_due_since = None
+                        if public_forwarder is not None:
+                            public_forwarder.reset_connect_failures()
+                        continue
+
+                    fail_count += 1
+                    err = " | ".join(f"{f['url']}: {f['error']}" for f in failures[-5:]) or "health probe failed"
+                    print(f"HEALTH_FAIL count={fail_count}/{args.health_failures} error={err[:240]}")
                 if fail_count >= max(1, args.health_failures):
                     now = time.time()
                     if rotate_due_since is None:
                         rotate_due_since = now
                     if (
+                        public_failure is None
+                        and
                         public_forwarder is not None
                         and args.defer_rotate_when_public_active_seconds > 0
                         and public_forwarder.recently_active(args.defer_rotate_when_public_active_seconds)
@@ -2095,6 +2207,8 @@ def main():
                         f"reason=health_failed reconnect={reconnects} generation={generation} "
                         f"failed_rank={result['rank']} next_rank={candidate_index + 1 if candidate_index < len(found) else 'fetch_new_list'}"
                     )
+                    if public_forwarder is not None:
+                        public_forwarder.reset_connect_failures()
                     stop_connector(args.base, timeout=10)
                     if args.max_reconnects and reconnects > args.max_reconnects:
                         raise RuntimeError(f"max reconnects exceeded: {args.max_reconnects}")

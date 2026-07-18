@@ -31,6 +31,7 @@ win_jump_install/bin/assets/geosite.dat
 - Startup and public health probes
 - Blacklist/rotation when a config fails
 - Conservative stability mode to avoid changing IP during active client traffic
+- Public SOCKS client failover: hold/retry client requests while a broken config rotates
 - Telegram notifications for failure and recovery
 - systemd service mode
 
@@ -149,6 +150,16 @@ HEALTH_VIA_PUBLIC=0
 ```
 
 The long-running watchdog checks the native SOCKS path by default, not the public relay, so it does not compete with real clients. If recent public traffic is detected, rotation is skipped/deferred instead of cutting the current client session.
+
+Public SOCKS failover policy:
+
+```text
+PUBLIC_CLIENT_FAILOVER_ATTEMPTS=4
+PUBLIC_CLIENT_FAILOVER_WAIT_SECONDS=120
+PUBLIC_CONNECT_FAILURES_BEFORE_ROTATE=1
+```
+
+If the public relay cannot complete a SOCKS5 connection through the native SDK, it records `PUBLIC_CONNECT_FAIL`, asks the main watchdog to rotate immediately, waits for the target update, and retries the same client request instead of returning SOCKS failure immediately.
 
 ## Notes
 
