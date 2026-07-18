@@ -1224,6 +1224,7 @@ class TcpForwarder:
         relay_buffer_bytes=262144,
         client_failover_attempts=3,
         client_failover_wait_seconds=90,
+        direct_fallback=True,
     ):
         self.listen_address = listen_address
         self.listen_port = int(listen_port)
@@ -1236,6 +1237,7 @@ class TcpForwarder:
         self.relay_buffer_bytes = max(65536, int(relay_buffer_bytes))
         self.client_failover_attempts = max(0, int(client_failover_attempts))
         self.client_failover_wait_seconds = max(1, int(client_failover_wait_seconds))
+        self.direct_fallback = bool(direct_fallback)
         self.client_slots = threading.BoundedSemaphore(self.max_clients)
         self.activity_lock = threading.Lock()
         self.active_clients = 0
@@ -1367,6 +1369,8 @@ class TcpForwarder:
                 break
             target_host = self.target_host
             target_port = self.target_port
+            if int(target_port) <= 0:
+                raise RuntimeError("native SOCKS target unavailable")
             try:
                 upstream = socket.create_connection((target_host, target_port), timeout=8)
                 self._tune_socket(upstream)
@@ -1410,13 +1414,19 @@ class TcpForwarder:
         if atyp == 1:
             addr = self._recv_exact(client, 4)
             addr_part = addr
+            dest_host = socket.inet_ntoa(addr)
         elif atyp == 3:
             length = self._recv_exact(client, 1)
             addr = self._recv_exact(client, length[0])
             addr_part = length + addr
+            try:
+                dest_host = addr.decode("idna")
+            except Exception:
+                dest_host = addr.decode("ascii", errors="replace")
         elif atyp == 4:
             addr = self._recv_exact(client, 16)
             addr_part = addr
+            dest_host = socket.inet_ntop(socket.AF_INET6, addr)
         else:
             try:
                 client.sendall(b"\x05\x08\x00\x01\x00\x00\x00\x00\x00\x00")
@@ -1425,8 +1435,9 @@ class TcpForwarder:
             raise RuntimeError("unsupported SOCKS5 address type")
 
         port = self._recv_exact(client, 2)
+        dest_port = int.from_bytes(port, "big")
         client.settimeout(None)
-        return req_head + addr_part + port
+        return req_head + addr_part + port, dest_host, dest_port
 
     def _read_socks_response_from_upstream(self, upstream):
         head = self._recv_exact(upstream, 4)
@@ -1470,6 +1481,13 @@ class TcpForwarder:
                 time.sleep(0.25)
         raise RuntimeError(f"native SOCKS connect failed after retries: {last_error}")
 
+    def _connect_direct(self, dest_host, dest_port):
+        upstream = socket.create_connection((dest_host, int(dest_port)), timeout=20)
+        self._tune_socket(upstream)
+        upstream.settimeout(None)
+        response = b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00"
+        return upstream, response
+
     def _reconnect_and_replay(self, request_bytes, replay_buffer, attempt):
         upstream, _response = self._connect_native_socks(request_bytes)
         if replay_buffer:
@@ -1482,7 +1500,7 @@ class TcpForwarder:
         acquired = False
         active_marked = False
         try:
-            request_bytes = self._read_socks_request_from_client(client)
+            request_bytes, dest_host, dest_port = self._read_socks_request_from_client(client)
 
             acquired = self.client_slots.acquire(timeout=5)
             if not acquired:
@@ -1508,6 +1526,23 @@ class TcpForwarder:
                         f"target=127.0.0.1:{self.target_port} error={str(exc)[:180]}",
                         flush=True,
                     )
+                    if self.direct_fallback:
+                        try:
+                            upstream, response = self._connect_direct(dest_host, dest_port)
+                            print(
+                                "PUBLIC_DIRECT_FALLBACK "
+                                f"dest={dest_host}:{dest_port} "
+                                f"after_native_failure_count={failure_count}",
+                                flush=True,
+                            )
+                            break
+                        except Exception as direct_exc:
+                            last_connect_error = direct_exc
+                            print(
+                                "PUBLIC_DIRECT_FALLBACK_FAIL "
+                                f"dest={dest_host}:{dest_port} error={str(direct_exc)[:180]}",
+                                flush=True,
+                            )
                     if failover_attempt >= self.client_failover_attempts:
                         break
                     changed = self.wait_for_target_change(target_version, self.client_failover_wait_seconds)
@@ -1579,8 +1614,8 @@ class TcpForwarder:
                         if replay_buffer:
                             replay_buffer.clear()
                         client.sendall(data)
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"PUBLIC_CLIENT_ERROR error={str(exc)[:220]}", flush=True)
         finally:
             for s in (client, upstream):
                 if s is not None:
@@ -1609,6 +1644,7 @@ def expose_public_port(
     relay_buffer_bytes=262144,
     client_failover_attempts=3,
     client_failover_wait_seconds=90,
+    direct_fallback=True,
 ):
     if os.name == "nt":
         # Clear stale netsh portproxy listeners from older runs. The current version
@@ -1653,6 +1689,7 @@ def expose_public_port(
         relay_buffer_bytes=relay_buffer_bytes,
         client_failover_attempts=client_failover_attempts,
         client_failover_wait_seconds=client_failover_wait_seconds,
+        direct_fallback=direct_fallback,
     ).start()
 
 
@@ -1897,6 +1934,8 @@ def main():
     ap.add_argument("--public-client-failover-attempts", type=int, default=3, help="hold a client and retry it after config rotation instead of returning SOCKS failure immediately")
     ap.add_argument("--public-client-failover-wait-seconds", type=int, default=90, help="seconds a failed public client waits for a new target before returning SOCKS failure")
     ap.add_argument("--public-connect-failures-before-rotate", type=int, default=1, help="public SOCKS connect failures that trigger immediate rotation")
+    ap.add_argument("--direct-fallback", dest="direct_fallback", action="store_true", default=True, help="when native proxy is unavailable, connect the SOCKS request directly from the server IP while rotation continues")
+    ap.add_argument("--no-direct-fallback", dest="direct_fallback", action="store_false", help="disable server-IP direct fallback")
     ap.add_argument("--public-health-url", default="http://ifconfig.me/ip", help="strict URL used to validate --public-port before accepting a config")
     ap.add_argument("--health-interval", type=int, default=30, help="seconds between SOCKS health checks in long-running mode")
     ap.add_argument("--health-failures", type=int, default=2, help="consecutive failed health checks before rotating config")
@@ -1939,6 +1978,35 @@ def main():
     found = []
     candidate_index = 0
     generation_failures = []
+
+    if args.public_port and args.direct_fallback:
+        public_forwarder = expose_public_port(
+            args.public_port,
+            0,
+            args.public_listen,
+            args.allow_from_ip,
+            args.public_max_connections,
+            args.public_upstream_retries,
+            args.public_stream_retries,
+            args.public_initial_buffer_bytes,
+            args.public_relay_buffer_bytes,
+            args.public_client_failover_attempts,
+            args.public_client_failover_wait_seconds,
+            args.direct_fallback,
+        )
+        print(f"PUBLIC_SOCKS5={args.public_listen}:{args.public_port}")
+        print("PUBLIC_FORWARDER=python-relay")
+        print("PUBLIC_FORWARDER_INITIAL_TARGET=direct_fallback")
+        print(f"PUBLIC_FORWARDER_MAX_CONNECTIONS={args.public_max_connections}")
+        print(f"PUBLIC_FORWARDER_UPSTREAM_RETRIES={args.public_upstream_retries}")
+        print(f"PUBLIC_FORWARDER_STREAM_RETRIES={args.public_stream_retries}")
+        print(f"PUBLIC_FORWARDER_RELAY_BUFFER_BYTES={args.public_relay_buffer_bytes}")
+        print(f"PUBLIC_CLIENT_FAILOVER_ATTEMPTS={args.public_client_failover_attempts}")
+        print(f"PUBLIC_CLIENT_FAILOVER_WAIT_SECONDS={args.public_client_failover_wait_seconds}")
+        print(f"PUBLIC_CONNECT_FAILURES_BEFORE_ROTATE={args.public_connect_failures_before_rotate}")
+        print(f"PUBLIC_DIRECT_FALLBACK={args.direct_fallback}")
+        if args.allow_from_ip:
+            print(f"PUBLIC_FIREWALL_ALLOW_FROM={args.allow_from_ip}")
 
     try:
         while True:
@@ -2049,6 +2117,7 @@ def main():
                         args.public_relay_buffer_bytes,
                         args.public_client_failover_attempts,
                         args.public_client_failover_wait_seconds,
+                        args.direct_fallback,
                     )
                     print(f"PUBLIC_SOCKS5={args.public_listen}:{args.public_port}")
                     print("PUBLIC_FORWARDER=python-relay")
@@ -2059,6 +2128,7 @@ def main():
                     print(f"PUBLIC_CLIENT_FAILOVER_ATTEMPTS={args.public_client_failover_attempts}")
                     print(f"PUBLIC_CLIENT_FAILOVER_WAIT_SECONDS={args.public_client_failover_wait_seconds}")
                     print(f"PUBLIC_CONNECT_FAILURES_BEFORE_ROTATE={args.public_connect_failures_before_rotate}")
+                    print(f"PUBLIC_DIRECT_FALLBACK={args.direct_fallback}")
                     if args.allow_from_ip:
                         print(f"PUBLIC_FIREWALL_ALLOW_FROM={args.allow_from_ip}")
                 else:
@@ -2070,8 +2140,10 @@ def main():
                         f"purpose={selected.get('purpose')} id={selected.get('id')} "
                         f"remote={selected.get('host')}:{selected.get('port')}"
                     )
+                    public_health_port = socks_port if args.direct_fallback else args.public_port
+                    public_health_path = "native_socks_strict" if args.direct_fallback else "public_relay"
                     public_check = curl_status_ip(
-                        args.public_port,
+                        public_health_port,
                         "127.0.0.1",
                         urls=[args.public_health_url],
                     )
@@ -2082,7 +2154,8 @@ def main():
                         )
                         print(
                             "PUBLIC_HEALTH_FAIL "
-                            f"generation={generation} rank={rank} {selected_desc} {public_error[:240]}"
+                            f"path={public_health_path} generation={generation} rank={rank} "
+                            f"{selected_desc} {public_error[:240]}"
                         )
                         generation_failures.append(
                             f"rank={rank} {selected_desc} public_health_failed {public_error}"
@@ -2093,7 +2166,7 @@ def main():
                         continue
                     print(
                         "PUBLIC_HEALTH_OK "
-                        f"ip={public_check.get('ip')} status={public_check.get('status')} "
+                        f"path={public_health_path} ip={public_check.get('ip')} status={public_check.get('status')} "
                         f"url={public_check.get('url')}"
                     )
 

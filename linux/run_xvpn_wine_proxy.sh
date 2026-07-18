@@ -27,6 +27,7 @@ PUBLIC_RELAY_BUFFER_BYTES="${PUBLIC_RELAY_BUFFER_BYTES:-262144}"
 PUBLIC_CLIENT_FAILOVER_ATTEMPTS="${PUBLIC_CLIENT_FAILOVER_ATTEMPTS:-4}"
 PUBLIC_CLIENT_FAILOVER_WAIT_SECONDS="${PUBLIC_CLIENT_FAILOVER_WAIT_SECONDS:-120}"
 PUBLIC_CONNECT_FAILURES_BEFORE_ROTATE="${PUBLIC_CONNECT_FAILURES_BEFORE_ROTATE:-1}"
+DIRECT_FALLBACK="${DIRECT_FALLBACK:-1}"
 SKIP_HEALTH_WHEN_PUBLIC_ACTIVE_SECONDS="${SKIP_HEALTH_WHEN_PUBLIC_ACTIVE_SECONDS:-300}"
 DEFER_ROTATE_WHEN_PUBLIC_ACTIVE_SECONDS="${DEFER_ROTATE_WHEN_PUBLIC_ACTIVE_SECONDS:-300}"
 MAX_ROTATE_DEFER_SECONDS="${MAX_ROTATE_DEFER_SECONDS:-900}"
@@ -73,6 +74,8 @@ Options:
   --public-client-failover-attempts N
   --public-client-failover-wait-seconds N
   --public-connect-failures-before-rotate N
+  --direct-fallback
+  --no-direct-fallback
   --health-via-public
   --with-tun2socks
   --with-iphlpapi-shim
@@ -96,6 +99,8 @@ while [[ $# -gt 0 ]]; do
     --public-client-failover-attempts) PUBLIC_CLIENT_FAILOVER_ATTEMPTS="$2"; shift 2 ;;
     --public-client-failover-wait-seconds) PUBLIC_CLIENT_FAILOVER_WAIT_SECONDS="$2"; shift 2 ;;
     --public-connect-failures-before-rotate) PUBLIC_CONNECT_FAILURES_BEFORE_ROTATE="$2"; shift 2 ;;
+    --direct-fallback) DIRECT_FALLBACK=1; shift ;;
+    --no-direct-fallback) DIRECT_FALLBACK=0; shift ;;
     --health-via-public) HEALTH_VIA_PUBLIC=1; shift ;;
     --with-tun2socks) NO_TUN2SOCKS=0; shift ;;
     --with-iphlpapi-shim) XVPN_IPHLPAPI_SHIM=1; shift ;;
@@ -261,6 +266,13 @@ if [[ "${HEALTH_VIA_PUBLIC}" == "1" ]]; then
   HEALTH_PATH_ARGS+=(--health-via-public)
 fi
 
+DIRECT_FALLBACK_ARGS=()
+if [[ "${DIRECT_FALLBACK}" == "1" ]]; then
+  DIRECT_FALLBACK_ARGS+=(--direct-fallback)
+else
+  DIRECT_FALLBACK_ARGS+=(--no-direct-fallback)
+fi
+
 "${PYTHON_BIN}" -u "${PROXY_SCRIPT}" \
   --base "${BASE}" \
   --refresh \
@@ -291,5 +303,6 @@ fi
   --public-client-failover-attempts "${PUBLIC_CLIENT_FAILOVER_ATTEMPTS}" \
   --public-client-failover-wait-seconds "${PUBLIC_CLIENT_FAILOVER_WAIT_SECONDS}" \
   --public-connect-failures-before-rotate "${PUBLIC_CONNECT_FAILURES_BEFORE_ROTATE}" \
+  "${DIRECT_FALLBACK_ARGS[@]}" \
   "${TUN_ARGS[@]}" \
   "${EXTRA_ARGS[@]}"
