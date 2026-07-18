@@ -1,0 +1,41 @@
+# Secrets
+telegram_config.json
+*.env
+*.pem
+*.key
+*.p12
+*.pfx
+*_token*
+*_secret*
+
+# Runtime/cache/logs
+runtime/
+WinProxy/runtime/
+__pycache__/
+*.pyc
+*.pyo
+*.log
+*.db
+*.sqlite
+*.sqlite3
+*.dat.tmp
+xapi_core.log
+xvpn_api_call_logger.db
+xvpn_log_items.dat
+
+# Private/proprietary runtime binaries
+win_jump_install/bin/xvpnsdk.exe
+win_jump_install/bin/*.dll
+win_jump_install/bin/assets/*.dat
+*.exe
+*.dll
+*.zip
+*.rar
+*.7z
+
+# Local deploy artifacts
+plink_*
+*.out
+*.err
+.ssh_known_hosts*
+push_to_github.ps1

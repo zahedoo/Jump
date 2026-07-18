@@ -1,0 +1,34 @@
+[Unit]
+Description=JumpProxy XVPN SDK public SOCKS relay
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/JumpProxyLinuxWine
+Environment=PUBLIC_PORT=10880
+Environment=PUBLIC_LISTEN=0.0.0.0
+Environment=MODE=ad
+Environment=HEALTH_INTERVAL=30
+Environment=HEALTH_FAILURES=1
+Environment=HEALTH_PROBES=1
+Environment=HEALTH_PROBE_MAX_FAILURES=0
+Environment=RECONNECT_DELAY=3
+Environment=START_WAIT=45
+Environment=STABILITY_PROBES=2
+Environment=STABILITY_MAX_FAILURES=1
+Environment=PUBLIC_MAX_CONNECTIONS=8
+Environment=PUBLIC_UPSTREAM_RETRIES=10
+Environment=PUBLIC_STREAM_RETRIES=3
+Environment=SKIP_HEALTH_WHEN_PUBLIC_ACTIVE_SECONDS=0
+Environment=XVPN_DISABLE_UDP=1
+Environment=XVPN_WINE_DLL_OVERRIDES=iphlpapi,fwpuclnt=n,b
+ExecStart=/bin/bash /opt/JumpProxyLinuxWine/linux/run_xvpn_wine_proxy.sh --with-tun2socks --with-iphlpapi-shim
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=20
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target

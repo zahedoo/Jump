@@ -1,0 +1,5 @@
+{
+  "enabled": false,
+  "botToken": "PUT_BOT_TOKEN_HERE",
+  "chatId": "PUT_CHAT_ID_HERE"
+}
