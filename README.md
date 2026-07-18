@@ -42,7 +42,7 @@ win_jump_install/bin/assets/geosite.dat
 sudo mkdir -p /opt/JumpProxyLinuxWine
 sudo cp -a . /opt/JumpProxyLinuxWine/
 cd /opt/JumpProxyLinuxWine
-sudo bash install.sh
+sudo bash install.sh --allow-firewall
 ```
 
 Copy the private runtime files into:
@@ -70,6 +70,39 @@ sudo journalctl -u jumpproxy -f
 
 ```bash
 sudo bash run.sh
+```
+
+## Professional installer commands
+
+```bash
+sudo bash install.sh --help
+sudo bash install.sh --status
+sudo bash install.sh --test
+sudo bash install.sh --logs
+sudo bash install.sh --restart
+```
+
+Custom install:
+
+```bash
+sudo bash install.sh \
+  --install-dir /opt/JumpProxyLinuxWine \
+  --port 10880 \
+  --listen 0.0.0.0 \
+  --mode ad \
+  --allow-firewall
+```
+
+Uninstall:
+
+```bash
+sudo bash /opt/JumpProxyLinuxWine/install.sh --uninstall -y
+```
+
+Full Persian guide:
+
+```text
+README_INSTALL_FA.md
 ```
 
 Default public SOCKS5 port:
