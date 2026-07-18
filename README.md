@@ -30,6 +30,7 @@ win_jump_install/bin/assets/geosite.dat
 - Auto watchdog and reconnect
 - Startup and public health probes
 - Blacklist/rotation when a config fails
+- Conservative stability mode to avoid changing IP during active client traffic
 - Telegram notifications for failure and recovery
 - systemd service mode
 
@@ -133,6 +134,21 @@ Failure conditions include:
 - empty response
 - SOCKS connection failure
 - response body containing forbidden/access denied errors
+
+Default stability policy:
+
+```text
+HEALTH_INTERVAL=120
+HEALTH_FAILURES=5
+HEALTH_PROBES=3
+HEALTH_PROBE_MAX_FAILURES=1
+SKIP_HEALTH_WHEN_PUBLIC_ACTIVE_SECONDS=300
+DEFER_ROTATE_WHEN_PUBLIC_ACTIVE_SECONDS=300
+MAX_ROTATE_DEFER_SECONDS=900
+HEALTH_VIA_PUBLIC=0
+```
+
+The long-running watchdog checks the native SOCKS path by default, not the public relay, so it does not compete with real clients. If recent public traffic is detected, rotation is skipped/deferred instead of cutting the current client session.
 
 ## Notes
 

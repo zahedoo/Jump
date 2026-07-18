@@ -33,10 +33,18 @@ WorkingDirectory=${ROOT}
 Environment=PUBLIC_PORT=${PUBLIC_PORT}
 Environment=MODE=${MODE}
 Environment=WINEPREFIX=${WINEPREFIX}
-Environment=PUBLIC_MAX_CONNECTIONS=8
-Environment=HEALTH_INTERVAL=30
-Environment=HEALTH_FAILURES=1
-Environment=RECONNECT_DELAY=5
+Environment=PUBLIC_MAX_CONNECTIONS=16
+Environment=PUBLIC_UPSTREAM_RETRIES=12
+Environment=PUBLIC_STREAM_RETRIES=4
+Environment=HEALTH_INTERVAL=120
+Environment=HEALTH_FAILURES=5
+Environment=HEALTH_PROBES=3
+Environment=HEALTH_PROBE_MAX_FAILURES=1
+Environment=SKIP_HEALTH_WHEN_PUBLIC_ACTIVE_SECONDS=300
+Environment=DEFER_ROTATE_WHEN_PUBLIC_ACTIVE_SECONDS=300
+Environment=MAX_ROTATE_DEFER_SECONDS=900
+Environment=HEALTH_VIA_PUBLIC=0
+Environment=RECONNECT_DELAY=10
 ExecStart=${SCRIPT_DIR}/run_xvpn_wine_proxy.sh
 Restart=always
 RestartSec=10
@@ -61,4 +69,3 @@ echo "  journalctl -u ${SERVICE_NAME} -f"
 echo ""
 echo "Status:"
 echo "  systemctl status ${SERVICE_NAME} --no-pager"
-

@@ -8,13 +8,13 @@ PUBLIC_PORT="${PUBLIC_PORT:-10880}"
 PUBLIC_LISTEN="${PUBLIC_LISTEN:-0.0.0.0}"
 MODE="${MODE:-ad}"
 SDK_PORT="${SDK_PORT:-8701}"
-HEALTH_INTERVAL="${HEALTH_INTERVAL:-30}"
-HEALTH_FAILURES="${HEALTH_FAILURES:-1}"
-HEALTH_PROBES="${HEALTH_PROBES:-1}"
-HEALTH_PROBE_MAX_FAILURES="${HEALTH_PROBE_MAX_FAILURES:-0}"
+HEALTH_INTERVAL="${HEALTH_INTERVAL:-120}"
+HEALTH_FAILURES="${HEALTH_FAILURES:-5}"
+HEALTH_PROBES="${HEALTH_PROBES:-3}"
+HEALTH_PROBE_MAX_FAILURES="${HEALTH_PROBE_MAX_FAILURES:-1}"
 HEALTH_PROBE_DELAY_MS="${HEALTH_PROBE_DELAY_MS:-600}"
 PUBLIC_HEALTH_URL="${PUBLIC_HEALTH_URL:-http://ifconfig.me/ip}"
-RECONNECT_DELAY="${RECONNECT_DELAY:-5}"
+RECONNECT_DELAY="${RECONNECT_DELAY:-10}"
 START_WAIT="${START_WAIT:-20}"
 STABILITY_PROBES="${STABILITY_PROBES:-3}"
 STABILITY_MAX_FAILURES="${STABILITY_MAX_FAILURES:-0}"
@@ -24,7 +24,10 @@ PUBLIC_UPSTREAM_RETRIES="${PUBLIC_UPSTREAM_RETRIES:-8}"
 PUBLIC_STREAM_RETRIES="${PUBLIC_STREAM_RETRIES:-2}"
 PUBLIC_INITIAL_BUFFER_BYTES="${PUBLIC_INITIAL_BUFFER_BYTES:-262144}"
 PUBLIC_RELAY_BUFFER_BYTES="${PUBLIC_RELAY_BUFFER_BYTES:-262144}"
-SKIP_HEALTH_WHEN_PUBLIC_ACTIVE_SECONDS="${SKIP_HEALTH_WHEN_PUBLIC_ACTIVE_SECONDS:-0}"
+SKIP_HEALTH_WHEN_PUBLIC_ACTIVE_SECONDS="${SKIP_HEALTH_WHEN_PUBLIC_ACTIVE_SECONDS:-300}"
+DEFER_ROTATE_WHEN_PUBLIC_ACTIVE_SECONDS="${DEFER_ROTATE_WHEN_PUBLIC_ACTIVE_SECONDS:-300}"
+MAX_ROTATE_DEFER_SECONDS="${MAX_ROTATE_DEFER_SECONDS:-900}"
+HEALTH_VIA_PUBLIC="${HEALTH_VIA_PUBLIC:-0}"
 NO_TUN2SOCKS="${NO_TUN2SOCKS:-1}"
 NO_CLEANUP="${NO_CLEANUP:-0}"
 XVPN_IPHLPAPI_SHIM="${XVPN_IPHLPAPI_SHIM:-0}"
@@ -64,6 +67,7 @@ Options:
   --health-failures N
   --public-max-connections N
   --public-health-url URL
+  --health-via-public
   --with-tun2socks
   --with-iphlpapi-shim
   --no-cleanup
@@ -83,6 +87,7 @@ while [[ $# -gt 0 ]]; do
     --health-failures) HEALTH_FAILURES="$2"; shift 2 ;;
     --public-max-connections) PUBLIC_MAX_CONNECTIONS="$2"; shift 2 ;;
     --public-health-url) PUBLIC_HEALTH_URL="$2"; shift 2 ;;
+    --health-via-public) HEALTH_VIA_PUBLIC=1; shift ;;
     --with-tun2socks) NO_TUN2SOCKS=0; shift ;;
     --with-iphlpapi-shim) XVPN_IPHLPAPI_SHIM=1; shift ;;
     --no-cleanup) NO_CLEANUP=1; shift ;;
@@ -242,6 +247,11 @@ fi
 
 export XVPN_DISABLE_UDP
 
+HEALTH_PATH_ARGS=()
+if [[ "${HEALTH_VIA_PUBLIC}" == "1" ]]; then
+  HEALTH_PATH_ARGS+=(--health-via-public)
+fi
+
 "${PYTHON_BIN}" -u "${PROXY_SCRIPT}" \
   --base "${BASE}" \
   --refresh \
@@ -249,7 +259,7 @@ export XVPN_DISABLE_UDP
   --assets-dir "${ASSETS_FOR_SDK}" \
   --public-port "${PUBLIC_PORT}" \
   --public-listen "${PUBLIC_LISTEN}" \
-  --health-via-public \
+  "${HEALTH_PATH_ARGS[@]}" \
   --health-interval "${HEALTH_INTERVAL}" \
   --health-failures "${HEALTH_FAILURES}" \
   --health-probes "${HEALTH_PROBES}" \
@@ -257,6 +267,8 @@ export XVPN_DISABLE_UDP
   --health-probe-delay-ms "${HEALTH_PROBE_DELAY_MS}" \
   --public-health-url "${PUBLIC_HEALTH_URL}" \
   --skip-health-when-public-active-seconds "${SKIP_HEALTH_WHEN_PUBLIC_ACTIVE_SECONDS}" \
+  --defer-rotate-when-public-active-seconds "${DEFER_ROTATE_WHEN_PUBLIC_ACTIVE_SECONDS}" \
+  --max-rotate-defer-seconds "${MAX_ROTATE_DEFER_SECONDS}" \
   --reconnect-delay "${RECONNECT_DELAY}" \
   --start-wait "${START_WAIT}" \
   --stability-probes "${STABILITY_PROBES}" \

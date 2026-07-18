@@ -1820,6 +1820,18 @@ def main():
     ap.add_argument("--health-probe-delay-ms", type=int, default=600, help="delay between health probe requests")
     ap.add_argument("--health-via-public", action="store_true", help="run watchdog through public relay; default uses native SOCKS to avoid competing with external clients")
     ap.add_argument("--skip-health-when-public-active-seconds", type=int, default=30, help="skip internal watchdog checks after public client activity to avoid competing with real traffic")
+    ap.add_argument(
+        "--defer-rotate-when-public-active-seconds",
+        type=int,
+        default=300,
+        help="when public clients are active/recent, keep the current config and postpone rotation for this many seconds",
+    )
+    ap.add_argument(
+        "--max-rotate-defer-seconds",
+        type=int,
+        default=900,
+        help="maximum time to postpone a pending rotation while public traffic is active; 0 means no maximum",
+    )
     ap.add_argument("--reconnect-delay", type=int, default=0, help="seconds to wait before trying the next candidate or refreshing after a failure")
     ap.add_argument("--max-reconnects", type=int, default=0, help="0 means reconnect forever")
     ap.add_argument("--start-wait", type=int, default=15, help="seconds to wait for the local SOCKS listener after native start")
@@ -2022,6 +2034,7 @@ def main():
 
             fail_count = 0
             last_ip = result["public_ip"]
+            rotate_due_since = None
             while True:
                 time.sleep(max(1, args.health_interval))
                 if (
@@ -2051,12 +2064,31 @@ def main():
                     else:
                         print(f"HEALTH_OK ip={out} url={checked_url}")
                     fail_count = 0
+                    rotate_due_since = None
                     continue
 
                 fail_count += 1
                 err = " | ".join(f"{f['url']}: {f['error']}" for f in failures[-5:]) or "health probe failed"
                 print(f"HEALTH_FAIL count={fail_count}/{args.health_failures} error={err[:240]}")
                 if fail_count >= max(1, args.health_failures):
+                    now = time.time()
+                    if rotate_due_since is None:
+                        rotate_due_since = now
+                    if (
+                        public_forwarder is not None
+                        and args.defer_rotate_when_public_active_seconds > 0
+                        and public_forwarder.recently_active(args.defer_rotate_when_public_active_seconds)
+                    ):
+                        deferred_for = int(now - rotate_due_since)
+                        max_defer = max(0, int(args.max_rotate_defer_seconds))
+                        if max_defer == 0 or deferred_for < max_defer:
+                            print(
+                                "ROTATE_DEFERRED "
+                                f"reason=public_activity current_rank={result['rank']} "
+                                f"deferred_for={deferred_for}s max_defer={max_defer}s "
+                                f"id={selected.get('id')} remote={selected.get('host')}:{selected.get('port')}"
+                            )
+                            continue
                     reconnects += 1
                     print(
                         "ROTATE_CONFIG "
